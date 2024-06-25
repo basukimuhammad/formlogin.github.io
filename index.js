@@ -1,12 +1,14 @@
 const express = require('express');
 const nodemailer = require('nodemailer');
 const bodyParser = require('body-parser');
-const fs = require('fs');
+const mongoose = require('mongoose');
 
 const app = express();
-const port = 3000;
 
-// Konfigurasi transporter untuk mengirim email menggunakan Gmail
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+
+// Konfigurasi Nodemailer
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -15,17 +17,23 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Menggunakan middleware body-parser
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+// Koneksi ke MongoDB
+mongoose.connect('mongodb+srv://Basuki:basuki187@basuki.mn6rfqd.mongodb.net/?retryWrites=true&w=majority&appName=Basuki', { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('Koneksi ke MongoDB berhasil'))
+  .catch(err => console.error('Koneksi ke MongoDB gagal', err));
 
-app.get('/srcdoc', (req, res) => {
-  res.redirect('/');
+const userSchema = new mongoose.Schema({
+  username: String,
+  password: String,
+  email: String,
+  otp: Number,
+  verified: Boolean
 });
 
-// Menampilkan halaman login
-app.get('/', (req, res) => {
-  res.send(`
+const User = mongoose.model('User', userSchema);
+
+app.get('/', (_, res) => {
+  return res.send(`
     <html>
       <head>
         <style>
@@ -100,7 +108,7 @@ app.get('/', (req, res) => {
           }
         </style>
       </head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <body>
         <div class="container">
           <h2>Login</h2>
@@ -118,31 +126,20 @@ app.get('/', (req, res) => {
     </html>
   `);
 });
+
 app.post('/', (req, res) => {
-  const username = req.body.username;
-  const password = req.body.password;
+  const { username, password } = req.body;
 
-  // Mengecek apakah username dan password sesuai dengan yang ada di datauser.json
-  const data = fs.readFileSync('datauser.json');
-  const users = JSON.parse(data);
-  const user = users.find(user => user.username === username && user.password === password);
-  if (!user) {
-    res.send('Username atau password salah. Silakan coba lagi.');
-    return;
-  }
-
-  // Mengecek apakah pengguna sudah diverifikasi
-  if (!user.verified) {
-    res.send('Akun Anda belum diverifikasi. Silakan verifikasi terlebih dahulu.');
-    return;
-  }
-
-  res.redirect('https://7999bacc-9b21-42c0-9e60-e5a3b41a3290-00-nxo1oxhcqzu0.sisko.replit.dev/');
+  User.findOne({ username, password }, (err, user) => {
+    if (err) return res.status(500).send('Error reading user data');
+    if (!user) return res.send('Username atau password salah. Silakan coba lagi.');
+    if (!user.verified) return res.send('Akun Anda belum diverifikasi. Silakan verifikasi terlebih dahulu.');
+    return res.redirect('/');
+  });
 });
 
-// Menampilkan halaman daftar
-app.get('/register', (req, res) => {
-  res.send(`
+app.get('/register', (_, res) => {
+  return res.send(`
     <html>
       <head>
         <style>
@@ -239,69 +236,36 @@ app.get('/register', (req, res) => {
   `);
 });
 
-// Mengirimkan kode OTP melalui email
 app.post('/register', (req, res) => {
-  const username = req.body.username;
-  const email = req.body.email;
-  const password = req.body.password;
+  const { username, email, password } = req.body;
 
-  // Cek apakah username sudah ada yang menggunakan
-  const data = fs.readFileSync('datauser.json');
-  let users = [];
-  if (data.length !== 0) {
-    users = JSON.parse(data);
-    const existingUser = users.find(user => user.username === username);
-    if (existingUser) {
-      res.send('Username sudah digunakan. Silakan gunakan username lain.');
-      return;
-    }
-  }
+  User.findOne({ username }, (err, existingUser) => {
+    if (err) return res.status(500).send('Error reading user data');
+    if (existingUser) return res.send('Username sudah digunakan. Silakan gunakan username lain.');
 
-  // Cek apakah email sudah ada yang menggunakan
-  const existingEmail = users.find(user => user.email === email);
-  if (existingEmail) {
-    res.send('Email sudah digunakan. Silakan gunakan email lain.');
-    return;
-  }
+    User.findOne({ email }, (err, existingEmail) => {
+      if (err) return res.status(500).send('Error reading user data');
+      if (existingEmail) return res.send('Email sudah digunakan. Silakan gunakan email lain.');
 
-  // Generate kode OTP acak
-  const otp = Math.floor(100000 + Math.random() * 900000);
+      const otp = Math.floor(100000 + Math.random() * 900000);
+      const mailOptions = { from: 'codeotpverifikasi@gmail.com', to: email, subject: 'Kode OTP untuk Verifikasi', text: `Kode OTP Anda adalah: ${otp}` };
 
-  // Konfigurasi email yang akan dikirim
-  const mailOptions = {
-    from: 'codeotpverifikasi@gmail.com',
-    to: email,
-    subject: 'Kode OTP untuk Verifikasi',
-    text: `Kode OTP Anda adalah: ${otp}`
-  };
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) return res.status(500).send('Error sending OTP');
 
-  // Mengirim email
-  transporter.sendMail(mailOptions, (error, info) => {
-    if (error) {
-      console.log(error);
-      res.send('Terjadi kesalahan saat mengirim email.');
-    } else {
-      console.log('Email terkirim: ' + info.response);
+        const newUser = new User({ username, email, password, otp, verified: false });
 
-      // Menyimpan data pengguna ke file JSON
-      const newUser = {
-        username: username,
-        password: password,
-        email: email,
-        otp: otp,
-        verified: false
-      };
-      users.push(newUser);
-      fs.writeFileSync('datauser.json', JSON.stringify(users));
-
-      res.redirect('/verify'); // Mengarahkan pengguna ke halaman verifikasi
-    }
+        newUser.save((err) => {
+          if (err) return res.status(500).send('Error saving user data');
+          return res.redirect('/verify');
+        });
+      });
+    });
   });
 });
 
-// Menampilkan halaman verifikasi kode OTP
-app.get('/verify', (req, res) => {
-  res.send(`
+app.get('/verify', (_, res) => {
+  return res.send(`
     <html>
       <head>
         <style>
@@ -381,77 +345,74 @@ app.get('/verify', (req, res) => {
 });
 
 app.post('/verify', (req, res) => {
-  const enteredOtp = req.body.otp;
+  const { otp } = req.body;
 
-  // Mengecek apakah kode OTP yang dimasukkan sesuai dengan yang dikirimkan
-  const data = fs.readFileSync('datauser.json');
-  const users = JSON.parse(data);
-  const user = users.find(user => user.otp === parseInt(enteredOtp));
-  if (!user) {
-    res.send('Kode OTP tidak valid. Silakan coba lagi.');
-    return;
-  }
+  User.findOne({ otp: parseInt(otp) }, (err, user) => {
+    if (err) return res.status(500).send('Error reading user data');
+    if (!user) return res.send('Kode OTP tidak valid. Silakan coba lagi.');
 
-  // Mengupdate status verifikasi pengguna
-  user.verified = true;
-  fs.writeFileSync('datauser.json', JSON.stringify(users));
-  res.send(`
-    <html>
-      <head>
-        <style>
-          body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background-color: #f2f2f2;
-          }
-          
-          .container {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
-            text-align: center;
-            max-width: 400px;
-            width: 100%;
-          }
-          
-          .container h2 {
-            color: #333;
-            margin-bottom: 20px;
-          }
-          
-          .container p {
-            color: #333;
-            margin-bottom: 20px;
-          }
-          
-          .container button {
-            background-color: #333;
-            color: #fff;
-            padding: 10px 20px;
-            border: none;
-            cursor: pointer;
-          }
-          
-          .container button:hover {
-            background-color: #555;
-          }
-        </style>
-      </head>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <body>
-        <div class="container">
-          <h2 style="color: #333;">Verifikasi Berhasil</h2>
-          <p>Akun Anda telah berhasil diverifikasi.</p>
-          <button onclick="location.href='/'" style="background-color: #333; color: #fff; padding: 10px 20px; border: none; cursor: pointer;">Kembali ke Login</button>
-        </div>
-      </body>
-    </html>
-  `);
+    user.verified = true;
+    user.otp = null; // Menghapus OTP setelah verifikasi
+
+    user.save((err) => {
+      if (err) return res.status(500).send('Error updating user data');
+      return res.send(`
+        <html>
+          <head>
+            <style>
+              body {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                background-color: #f2f2f2;
+              }
+              
+              .container {
+                background-color: #fff;
+                padding: 20px;
+                border-radius: 5px;
+                box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+                text-align: center;
+                max-width: 400px;
+                width: 100%;
+              }
+              
+              .container h2 {
+                color: #333;
+                margin-bottom: 20px;
+              }
+              
+              .container p {
+                color: #333;
+                margin-bottom: 20px;
+              }
+              
+              .container button {
+                background-color: #333;
+                color: #fff;
+                padding: 10px 20px;
+                border: none;
+                cursor: pointer;
+              }
+              
+              .container button:hover {
+                background-color: #555;
+              }
+            </style>
+          </head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <body>
+            <div class="container">
+              <h2 style="color: #333;">Verifikasi Berhasil</h2>
+              <p>Akun Anda telah berhasil diverifikasi.</p>
+              <button onclick="location.href='/'" style="background-color: #333; color: #fff; padding: 10px 20px; border: none; cursor: pointer;">Kembali ke Login</button>
+            </div>
+          </body>
+        </html>
+      `);
+    });
+  });
 });
 
-app.listen(port, () => {
-  console.log(`Server berjalan di http://localhost:${port}`);
-});
+app.listen(3000, () => console.log('Server ready on port 3000.'));
